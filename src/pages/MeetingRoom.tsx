@@ -140,6 +140,9 @@ const MeetingRoom = () => {
         )}
       </div>
 
+      {/* Captions - bottom left, only when enabled */}
+      <CaptionsBar captions={demoCaptions} isVisible={isCaptionsOn} />
+
       {/* Controls */}
       <div className="flex justify-center pb-4 pt-2 flex-shrink-0">
         <MeetingControls
