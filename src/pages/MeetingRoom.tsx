@@ -108,7 +108,7 @@ const MeetingRoom = () => {
       {/* Main content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Video grid */}
-        <div className="flex-1 p-4 relative">
+        <div className="flex-1 p-4">
           <div className="grid grid-cols-2 gap-3 h-full auto-rows-fr">
             <VideoTile
               name="Você"
@@ -121,9 +121,6 @@ const MeetingRoom = () => {
             <VideoTile name="João Santos" isMuted={true} isCameraOn={false} />
             <VideoTile name="Ana (Libras)" isMuted={false} isCameraOn={true} />
           </div>
-
-          {/* Captions */}
-          <CaptionsBar captions={demoCaptions} isVisible={isCaptionsOn} />
         </div>
 
         {/* Side panels */}
@@ -142,6 +139,9 @@ const MeetingRoom = () => {
           </div>
         )}
       </div>
+
+      {/* Captions - bottom left, only when enabled */}
+      <CaptionsBar captions={demoCaptions} isVisible={isCaptionsOn} />
 
       {/* Controls */}
       <div className="flex justify-center pb-4 pt-2 flex-shrink-0">

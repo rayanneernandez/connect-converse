@@ -17,15 +17,15 @@ const CaptionsBar = ({ captions, isVisible }: CaptionsBarProps) => {
   if (!isVisible || captions.length === 0) return null;
 
   return (
-    <div className="absolute bottom-24 left-1/2 -translate-x-1/2 w-full max-w-3xl px-4">
-      <div className="glass rounded-2xl p-4 space-y-2">
+    <div className="w-full max-w-2xl px-4 ml-4 mb-1">
+      <div className="glass rounded-xl p-3 space-y-1.5">
         {captions.slice(-3).map((caption) => (
-          <div key={caption.id} className="flex items-start gap-3">
+          <div key={caption.id} className="flex items-start gap-2">
             <div className="flex-shrink-0 mt-0.5">
               {caption.type === "libras" ? (
-                <Hand className="w-4 h-4 text-accent" />
+                <Hand className="w-3.5 h-3.5 text-accent" />
               ) : (
-                <Globe className="w-4 h-4 text-primary" />
+                <Globe className="w-3.5 h-3.5 text-primary" />
               )}
             </div>
             <div>
