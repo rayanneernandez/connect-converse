@@ -1,4 +1,4 @@
-import { Mic, MicOff } from "lucide-react";
+import { Mic, MicOff, Pin, PinOff } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 interface VideoTileProps {
@@ -7,10 +7,11 @@ interface VideoTileProps {
   isCameraOn: boolean;
   isLocal?: boolean;
   stream?: MediaStream | null;
-  isLarge?: boolean;
+  isPinned?: boolean;
+  onPin?: () => void;
 }
 
-const VideoTile = ({ name, isMuted, isCameraOn, isLocal, stream, isLarge }: VideoTileProps) => {
+const VideoTile = ({ name, isMuted, isCameraOn, isLocal, stream, isPinned, onPin }: VideoTileProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -27,7 +28,11 @@ const VideoTile = ({ name, isMuted, isCameraOn, isLocal, stream, isLarge }: Vide
     .slice(0, 2);
 
   return (
-    <div className={`relative rounded-2xl overflow-hidden bg-secondary border border-border group ${isLarge ? "col-span-2 row-span-2" : ""}`}>
+    <div
+      className={`relative rounded-2xl overflow-hidden bg-secondary border group transition-all duration-200 ${
+        isPinned ? "border-primary ring-2 ring-primary/30" : "border-border"
+      }`}
+    >
       {isCameraOn && stream ? (
         <video
           ref={videoRef}
@@ -44,6 +49,20 @@ const VideoTile = ({ name, isMuted, isCameraOn, isLocal, stream, isLarge }: Vide
         </div>
       )}
 
+      {/* Pin button */}
+      {onPin && (
+        <button
+          onClick={onPin}
+          className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity glass rounded-lg p-1.5 hover:bg-secondary"
+        >
+          {isPinned ? (
+            <PinOff className="w-4 h-4 text-primary" />
+          ) : (
+            <Pin className="w-4 h-4 text-muted-foreground" />
+          )}
+        </button>
+      )}
+
       {/* Name badge */}
       <div className="absolute bottom-3 left-3 flex items-center gap-2">
         <div className="glass rounded-lg px-3 py-1.5 flex items-center gap-2">
@@ -57,15 +76,6 @@ const VideoTile = ({ name, isMuted, isCameraOn, isLocal, stream, isLarge }: Vide
           </span>
         </div>
       </div>
-
-      {/* Recording indicator */}
-      {isLocal && (
-        <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
-          <div className="glass rounded-lg px-2 py-1 text-xs text-muted-foreground">
-            {isLocal ? "Local" : ""}
-          </div>
-        </div>
-      )}
     </div>
   );
 };
