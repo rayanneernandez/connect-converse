@@ -29,8 +29,10 @@ const VideoTile = ({ name, isMuted, isCameraOn, isLocal, stream, isPinned, onPin
 
   return (
     <div
-      className={`relative min-h-[220px] overflow-hidden rounded-2xl border bg-secondary group transition-all duration-200 sm:min-h-[260px] ${
-        isPinned ? "border-primary ring-2 ring-primary/30" : "border-border"
+      className={`relative h-full w-full overflow-hidden rounded-2xl border bg-secondary group transition-all duration-200 ${
+        isPinned
+          ? "border-primary ring-2 ring-primary/30"
+          : "border-border min-h-[220px] sm:min-h-[260px]"
       }`}
     >
       {isCameraOn && stream ? (
@@ -39,7 +41,9 @@ const VideoTile = ({ name, isMuted, isCameraOn, isLocal, stream, isPinned, onPin
           autoPlay
           playsInline
           muted={isLocal}
-          className="h-full w-full bg-black object-contain [transform:scaleX(1)]"
+          className={`h-full w-full bg-black object-contain ${
+            isLocal ? "[transform:scaleX(-1)]" : "[transform:scaleX(1)]"
+          }`}
         />
       ) : (
         <div className="w-full h-full flex items-center justify-center min-h-[200px]">

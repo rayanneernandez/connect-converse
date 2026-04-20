@@ -1,9 +1,10 @@
 import {
   Mic, MicOff, Video, VideoOff, Monitor, PhoneOff,
-  Circle, Subtitles
+  Circle, Subtitles, Sparkles,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useState, useRef, useEffect } from "react";
+import type { BackgroundMode, FilterMode } from "@/hooks/useProcessedStream";
 
 type CaptionLang = "PT" | "EN" | "ES" | "Libras";
 
@@ -14,11 +15,15 @@ interface MeetingControlsProps {
   isScreenSharing: boolean;
   isCaptionsOn: boolean;
   activeCaptionLangs: CaptionLang[];
+  background: BackgroundMode;
+  filter: FilterMode;
   onToggleMic: () => void;
   onToggleCamera: () => void;
   onToggleRecording: () => void;
   onToggleScreenShare: () => void;
   onToggleCaptionLang: (lang: CaptionLang) => void;
+  onChangeBackground: (b: BackgroundMode) => void;
+  onChangeFilter: (f: FilterMode) => void;
   onLeave: () => void;
 }
 
@@ -29,23 +34,46 @@ const CAPTION_OPTIONS: { value: CaptionLang; label: string }[] = [
   { value: "Libras", label: "Libras" },
 ];
 
+const BACKGROUND_OPTIONS: { value: BackgroundMode; label: string }[] = [
+  { value: "none", label: "Sem efeito" },
+  { value: "blur", label: "Desfocar fundo" },
+  { value: "heavy-blur", label: "Desfocar forte" },
+];
+
+const FILTER_OPTIONS: { value: FilterMode; label: string }[] = [
+  { value: "none", label: "Sem filtro" },
+  { value: "warm", label: "Quente" },
+  { value: "cool", label: "Frio" },
+  { value: "vivid", label: "Vívido" },
+  { value: "grayscale", label: "Preto e branco" },
+  { value: "sepia", label: "Sépia" },
+];
+
 const MeetingControls = ({
   isMicOn, isCameraOn, isRecording, isScreenSharing, isCaptionsOn, activeCaptionLangs,
+  background, filter,
   onToggleMic, onToggleCamera, onToggleRecording, onToggleScreenShare,
-  onToggleCaptionLang, onLeave,
+  onToggleCaptionLang, onChangeBackground, onChangeFilter, onLeave,
 }: MeetingControlsProps) => {
   const [showCaptionMenu, setShowCaptionMenu] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const [showEffectsMenu, setShowEffectsMenu] = useState(false);
+  const captionMenuRef = useRef<HTMLDivElement>(null);
+  const effectsMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+      if (captionMenuRef.current && !captionMenuRef.current.contains(e.target as Node)) {
         setShowCaptionMenu(false);
+      }
+      if (effectsMenuRef.current && !effectsMenuRef.current.contains(e.target as Node)) {
+        setShowEffectsMenu(false);
       }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+  const effectsActive = background !== "none" || filter !== "none";
 
   const controls = [
     {
@@ -70,7 +98,10 @@ const MeetingControls = ({
       icon: Circle,
       label: isRecording ? "Parar Gravação" : "Gravar",
       onClick: onToggleRecording,
-      className: isRecording ? "control-btn bg-destructive text-destructive-foreground animate-pulse" : "control-btn-active",
+      // Solid red when recording (no pulse animation).
+      className: isRecording
+        ? "control-btn bg-destructive text-destructive-foreground"
+        : "control-btn-active",
     },
   ];
 
@@ -90,8 +121,60 @@ const MeetingControls = ({
           </Tooltip>
         ))}
 
+        {/* Effects button with dropdown */}
+        <div className="relative" ref={effectsMenuRef}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => setShowEffectsMenu((s) => !s)}
+                className={`control-btn ${
+                  effectsActive
+                    ? "bg-primary text-primary-foreground"
+                    : "control-btn-active"
+                }`}
+              >
+                <Sparkles className="w-5 h-5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              <p>Efeitos e fundo</p>
+            </TooltipContent>
+          </Tooltip>
+
+          {showEffectsMenu && (
+            <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 glass rounded-xl p-2 min-w-[220px] shadow-lg z-20">
+              <p className="text-xs text-muted-foreground px-2 py-1 font-medium">
+                Fundo
+              </p>
+              {BACKGROUND_OPTIONS.map((opt) => (
+                <SelectItem
+                  key={opt.value}
+                  label={opt.label}
+                  active={background === opt.value}
+                  onClick={() => onChangeBackground(opt.value)}
+                />
+              ))}
+              <div className="h-px bg-border my-1.5" />
+              <p className="text-xs text-muted-foreground px-2 py-1 font-medium">
+                Filtro
+              </p>
+              {FILTER_OPTIONS.map((opt) => (
+                <SelectItem
+                  key={opt.value}
+                  label={opt.label}
+                  active={filter === opt.value}
+                  onClick={() => onChangeFilter(opt.value)}
+                />
+              ))}
+              <p className="text-[11px] text-muted-foreground px-2 pt-2 pb-1 leading-snug">
+                Você pode combinar um fundo e um filtro.
+              </p>
+            </div>
+          )}
+        </div>
+
         {/* Caption button with dropdown */}
-        <div className="relative" ref={menuRef}>
+        <div className="relative" ref={captionMenuRef}>
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -109,7 +192,7 @@ const MeetingControls = ({
           </Tooltip>
 
           {showCaptionMenu && (
-            <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 glass rounded-xl p-2 min-w-[160px] shadow-lg">
+            <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 glass rounded-xl p-2 min-w-[160px] shadow-lg z-20">
               <p className="text-xs text-muted-foreground px-2 py-1 font-medium">Idiomas das legendas</p>
               {CAPTION_OPTIONS.map((opt) => {
                 const isActive = activeCaptionLangs.includes(opt.value);
@@ -146,5 +229,25 @@ const MeetingControls = ({
     </div>
   );
 };
+
+const SelectItem = ({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) => (
+  <button
+    onClick={onClick}
+    className={`w-full text-left px-3 py-2 rounded-lg text-sm flex items-center justify-between transition-colors ${
+      active ? "bg-primary/20 text-primary" : "text-foreground hover:bg-secondary"
+    }`}
+  >
+    {label}
+    {active && <div className="w-2 h-2 rounded-full bg-primary" />}
+  </button>
+);
 
 export default MeetingControls;
