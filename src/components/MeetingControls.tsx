@@ -1,6 +1,6 @@
 import {
   Mic, MicOff, Video, VideoOff, Monitor, PhoneOff,
-  Circle, Subtitles, ChevronDown
+  Circle, Subtitles
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useState, useRef, useEffect } from "react";

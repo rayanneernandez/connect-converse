@@ -29,7 +29,7 @@ const VideoTile = ({ name, isMuted, isCameraOn, isLocal, stream, isPinned, onPin
 
   return (
     <div
-      className={`relative rounded-2xl overflow-hidden bg-secondary border group transition-all duration-200 ${
+      className={`relative min-h-[220px] overflow-hidden rounded-2xl border bg-secondary group transition-all duration-200 sm:min-h-[260px] ${
         isPinned ? "border-primary ring-2 ring-primary/30" : "border-border"
       }`}
     >
@@ -39,7 +39,7 @@ const VideoTile = ({ name, isMuted, isCameraOn, isLocal, stream, isPinned, onPin
           autoPlay
           playsInline
           muted={isLocal}
-          className="w-full h-full object-cover"
+          className="h-full w-full bg-black object-contain [transform:scaleX(1)]"
         />
       ) : (
         <div className="w-full h-full flex items-center justify-center min-h-[200px]">
@@ -53,7 +53,7 @@ const VideoTile = ({ name, isMuted, isCameraOn, isLocal, stream, isPinned, onPin
       {onPin && (
         <button
           onClick={onPin}
-          className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity glass rounded-lg p-1.5 hover:bg-secondary"
+          className="absolute top-3 right-3 rounded-lg glass p-1.5 transition-opacity hover:bg-secondary md:opacity-0 md:group-hover:opacity-100"
         >
           {isPinned ? (
             <PinOff className="w-4 h-4 text-primary" />

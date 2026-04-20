@@ -17,7 +17,7 @@ const ParticipantsPanel = ({ isOpen, onClose, participants }: ParticipantsPanelP
   if (!isOpen) return null;
 
   return (
-    <div className="w-80 glass rounded-2xl flex flex-col h-full">
+    <div className="flex h-full w-full max-w-sm flex-col rounded-2xl glass md:w-80">
       <div className="flex items-center justify-between p-4 border-b border-border">
         <h3 className="font-semibold">Participantes ({participants.length})</h3>
         <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">

@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 
 type CaptionLang = "PT" | "EN" | "ES" | "Libras";
 
-interface DemoParticipant {
+interface Participant {
   id: string;
   name: string;
   isMuted: boolean;
@@ -35,24 +35,17 @@ const MeetingRoom = () => {
 
   const isCaptionsOn = activeCaptionLangs.length > 0;
 
-  const demoParticipants: DemoParticipant[] = [
+  const participants: Participant[] = [
     { id: "local", name: "Você", isMuted: !isMicOn, isCameraOn },
-    { id: "maria", name: "Maria Silva", isMuted: false, isCameraOn: true },
-    { id: "joao", name: "João Santos", isMuted: true, isCameraOn: false },
-    { id: "ana", name: "Ana (Libras)", isMuted: false, isCameraOn: true },
   ];
 
-  const allCaptions = [
-    { id: "1", speaker: "Maria Silva", text: "Olá, boa tarde a todos!", type: "speech" as const, language: "PT" },
-    { id: "2", speaker: "João Santos", text: "Hello everyone → Olá a todos", type: "speech" as const, language: "EN" },
-    { id: "3", speaker: "João Santos", text: "Hola a todos → Olá a todos", type: "speech" as const, language: "ES" },
-    { id: "4", speaker: "Ana (Libras)", text: "Bom dia, estou acompanhando a reunião", type: "libras" as const, language: "Libras" },
-  ];
-
-  const filteredCaptions = allCaptions.filter((c) => {
-    if (c.type === "libras") return activeCaptionLangs.includes("Libras");
-    return c.language && activeCaptionLangs.includes(c.language as CaptionLang);
-  });
+  const filteredCaptions: Array<{
+    id: string;
+    speaker: string;
+    text: string;
+    type: "speech" | "libras";
+    language?: string;
+  }> = [];
 
   useEffect(() => {
     const getMedia = async () => {
@@ -121,14 +114,14 @@ const MeetingRoom = () => {
   // Build tiles - pinned goes large
   const allTiles = [
     ...(isScreenSharing ? [{ id: "screen", name: "Tela Compartilhada", isMuted: true, isCameraOn: true }] : []),
-    ...demoParticipants,
+    ...participants,
   ];
 
   const pinnedTile = pinnedId ? allTiles.find((t) => t.id === pinnedId) : null;
   const unpinnedTiles = allTiles.filter((t) => t.id !== pinnedId);
 
   return (
-    <div className="h-screen flex flex-col bg-background">
+    <div className="flex min-h-screen flex-col bg-background">
       {/* Top bar */}
       <div className="h-14 glass flex items-center justify-between px-4 flex-shrink-0">
         <div className="flex items-center gap-3">
@@ -158,11 +151,11 @@ const MeetingRoom = () => {
       </div>
 
       {/* Main content */}
-      <div className="flex-1 flex overflow-hidden min-h-0">
-        <div className="flex-1 p-4 flex flex-col gap-3 min-h-0">
+      <div className="flex flex-1 min-h-0 flex-col overflow-hidden lg:flex-row">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 sm:p-4">
           {pinnedTile ? (
             /* Pinned layout: large + sidebar */
-            <div className="flex-1 flex gap-3 min-h-0">
+            <div className="flex flex-1 min-h-0 flex-col gap-3 xl:flex-row">
               <div className="flex-1 min-h-0">
                 <VideoTile
                   name={pinnedTile.name}
@@ -174,7 +167,7 @@ const MeetingRoom = () => {
                   onPin={() => togglePin(pinnedTile.id)}
                 />
               </div>
-              <div className="w-48 flex flex-col gap-2 overflow-y-auto">
+              <div className="grid grid-cols-1 gap-2 overflow-y-auto sm:grid-cols-2 xl:flex xl:w-56 xl:flex-col">
                 {unpinnedTiles.map((p) => (
                   <div key={p.id} className="h-28 flex-shrink-0">
                     <VideoTile
@@ -191,7 +184,7 @@ const MeetingRoom = () => {
             </div>
           ) : (
             /* Grid layout */
-            <div className="flex-1 grid grid-cols-2 gap-3 auto-rows-fr min-h-0">
+            <div className="grid flex-1 min-h-0 auto-rows-fr grid-cols-1 gap-3 md:grid-cols-2">
               {allTiles.map((p) => (
                 <VideoTile
                   key={p.id}
@@ -218,7 +211,7 @@ const MeetingRoom = () => {
             <ParticipantsPanel
               isOpen={isParticipantsOpen}
               onClose={() => setIsParticipantsOpen(false)}
-              participants={demoParticipants}
+              participants={participants}
             />
           </div>
         )}
