@@ -11,12 +11,22 @@ import PreJoinLobby from "@/components/PreJoinLobby";
 import RecordEmailDialog from "@/components/RecordEmailDialog";
 import { Button } from "@/components/ui/button";
 import { useMeetingPeers } from "@/hooks/useMeetingPeers";
+import type { RemoteCaption } from "@/hooks/useMeetingPeers";
 import {
   BackgroundMode,
   FilterMode,
   useProcessedStream,
 } from "@/hooks/useProcessedStream";
 import { useMeetingRecorder } from "@/hooks/useMeetingRecorder";
+import {
+  useSpeechCaptions,
+  type CaptionLangCode,
+  type SRStatus,
+} from "@/hooks/useSpeechCaptions";
+import { useVLibras } from "@/hooks/useVLibras";
+import { useLibrasRecognition } from "@/hooks/useLibrasRecognition";
+import { translateText, toShortLang } from "@/lib/translate";
+import type { CaptionEntry } from "@/components/CaptionsBar";
 
 type CaptionLang = "PT" | "EN" | "ES" | "Libras";
 
@@ -39,6 +49,16 @@ const MeetingRoom = () => {
   const [isCameraOn, setIsCameraOn] = useState(true);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [activeCaptionLangs, setActiveCaptionLangs] = useState<CaptionLang[]>([]);
+  // What language the local user actually speaks into the mic. This is what
+  // the Web Speech API is configured to recognize. Independent from which
+  // caption languages the user wants to see — captions in other languages
+  // are produced by translating this one.
+  const [myLang, setMyLang] = useState<CaptionLangCode>(() => {
+    const nav = typeof navigator !== "undefined" ? navigator.language : "";
+    if (nav.toLowerCase().startsWith("en")) return "EN";
+    if (nav.toLowerCase().startsWith("es")) return "ES";
+    return "PT";
+  });
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
   const [rawLocalStream, setRawLocalStream] = useState<MediaStream | null>(null);
@@ -59,14 +79,109 @@ const MeetingRoom = () => {
   // video (and the local user sees their own effects in the preview too).
   const localStream = useProcessedStream(rawLocalStream, background, filter);
 
+  /* ---------- Captions / Libras ---------- */
+  const [captions, setCaptions] = useState<CaptionEntry[]>([]);
+  // Keep a ref so we can append captions from a callback without stale state.
+  const captionsRef = useRef<CaptionEntry[]>([]);
+  captionsRef.current = captions;
+
+  const pushCaption = useCallback((c: CaptionEntry) => {
+    setCaptions((prev) => {
+      // Replace in-flight interim for the same utterance id + lang.
+      const existingIdx = prev.findIndex(
+        (e) => e.id === c.id && e.lang === c.lang
+      );
+      let next: CaptionEntry[];
+      if (existingIdx >= 0) {
+        next = [...prev];
+        // Drop the previous interim if the new one is final.
+        next.splice(existingIdx, 1);
+      } else {
+        next = prev;
+      }
+      next = [...next, c];
+      // Keep a rolling window — captions are ephemeral UI.
+      return next.length > 30 ? next.slice(next.length - 30) : next;
+    });
+  }, []);
+
+  // Keep a ref for the active caption languages so the translation helper
+  // always sees the latest selection without re-creating the callback.
+  const activeCaptionLangsRef = useRef<CaptionLang[]>(activeCaptionLangs);
+  useEffect(() => {
+    activeCaptionLangsRef.current = activeCaptionLangs;
+  }, [activeCaptionLangs]);
+
+  // Ingest a caption (local or remote) and, for every currently-enabled
+  // caption language that differs from the source, also push a translated
+  // version so the user can read what was said in their preferred language.
+  const ingestCaption = useCallback(
+    (entry: CaptionEntry) => {
+      // Always push the original — the user may have the source language
+      // enabled, or may later enable it.
+      pushCaption(entry);
+
+      // Only translate final utterances; interim captions thrash the API.
+      if (!entry.final) return;
+
+      const active = activeCaptionLangsRef.current;
+      const src = toShortLang(entry.lang);
+      if (!src) return;
+
+      // Collect translation targets: every enabled text caption language,
+      // plus PT if Libras is enabled (VLibras needs Portuguese text to
+      // animate the avatar).
+      const targets = new Set<CaptionLangCode>();
+      active.forEach((l) => {
+        if (l !== "Libras") targets.add(l);
+      });
+      if (active.includes("Libras")) targets.add("PT");
+      // No need to translate into the source language.
+      targets.delete(entry.lang as CaptionLangCode);
+
+      targets.forEach((target) => {
+        const tgt = toShortLang(target);
+        if (!tgt) return;
+        translateText(entry.text, src, tgt).then((translated) => {
+          if (!translated || translated === entry.text) return;
+          pushCaption({
+            id: `${entry.id}:trans:${target}`,
+            speaker: entry.speaker,
+            lang: target,
+            text: translated,
+            final: true,
+            type: entry.type,
+            sourceLang: entry.lang,
+          });
+        });
+      });
+    },
+    [pushCaption]
+  );
+
+  const handleRemoteCaption = useCallback(
+    (rc: RemoteCaption) => {
+      ingestCaption({
+        id: `${rc.peerId}:${rc.id}`,
+        speaker: rc.speaker,
+        lang: rc.lang,
+        text: rc.text,
+        final: rc.final,
+        type: "speech",
+      });
+    },
+    [ingestCaption]
+  );
+
   // WebRTC mesh — only connects after the user clicks "Join" in the lobby.
-  const { remotes } = useMeetingPeers({
+  const { remotes, sendCaption } = useMeetingPeers({
     meetingId: id ?? "",
     localStream,
     localName: displayName || "Convidado",
     isMicOn,
     isCameraOn,
     enabled: hasJoined,
+    onRemoteCaption: handleRemoteCaption,
   });
 
   const localParticipant: Participant = {
@@ -85,13 +200,100 @@ const MeetingRoom = () => {
 
   const participants: Participant[] = [localParticipant, ...remoteParticipants];
 
-  const filteredCaptions: Array<{
-    id: string;
-    speaker: string;
-    text: string;
-    type: "speech" | "libras";
-    language?: string;
-  }> = [];
+  // The STT always runs in the user's declared speaking language. Captions in
+  // other enabled languages are produced via translation (see ingestCaption).
+  const spokenLang: CaptionLangCode = myLang;
+
+  const librasEnabled = activeCaptionLangs.includes("Libras");
+
+  const [srStatus, setSrStatus] = useState<SRStatus>({ kind: "idle" });
+
+  // Run the Web Speech API on the local mic when captions are on.
+  useSpeechCaptions({
+    enabled: hasJoined && isCaptionsOn && !!spokenLang,
+    lang: spokenLang,
+    isMicOn,
+    onCaption: (c) => {
+      // Show locally immediately — ingestCaption also fans out translations
+      // into any other enabled caption languages.
+      ingestCaption({
+        id: `local:${c.id}`,
+        speaker: displayName || "Você",
+        lang: c.lang,
+        text: c.text,
+        final: c.final,
+        type: "speech",
+      });
+      // Broadcast the original to peers; each peer translates on their side
+      // based on their own selected caption languages.
+      sendCaption({
+        id: c.id,
+        lang: c.lang,
+        text: c.text,
+        final: c.final,
+      });
+    },
+    onStatus: (s) => {
+      setSrStatus(s);
+      if (s.kind === "unsupported") {
+        toast(
+          "Legendas por voz exigem Chrome ou Edge. Seu navegador não suporta a Web Speech API.",
+          { icon: "⚠️" }
+        );
+      } else if (s.kind === "error" && s.error === "not-allowed") {
+        toast.error(
+          "Permita o acesso ao microfone para que as legendas sejam geradas."
+        );
+      }
+    },
+  });
+
+  // Load the VLibras avatar widget when Libras is selected.
+  const { ready: librasReady } = useVLibras(librasEnabled);
+
+  // Optional backend-powered Libras → text recognition. Reads from
+  // VITE_LIBRAS_WS_URL at build time (e.g. "ws://localhost:8000/libras").
+  const librasWsUrl = import.meta.env.VITE_LIBRAS_WS_URL as string | undefined;
+  useLibrasRecognition({
+    enabled: hasJoined && librasEnabled && !!librasWsUrl,
+    localStream: rawLocalStream,
+    serverUrl: librasWsUrl ?? "",
+    fps: 3,
+    onRecognized: (e) => {
+      const entry: CaptionEntry = {
+        id: `local-libras:${e.id}`,
+        speaker: displayName || "Você",
+        lang: "PT",
+        text: e.text,
+        final: e.final,
+        type: "libras",
+      };
+      // ingestCaption pushes the PT version plus any translations needed for
+      // the user's other enabled caption languages (EN / ES).
+      ingestCaption(entry);
+      // Broadcast as a PT caption so other peers see it too.
+      sendCaption({
+        id: `libras:${e.id}`,
+        lang: "PT",
+        text: e.text,
+        final: e.final,
+      });
+    },
+  });
+
+  // Filter captions for display based on which languages the user enabled.
+  const filteredCaptions: CaptionEntry[] = captions.filter((c) =>
+    activeCaptionLangs.includes(c.lang as CaptionLang)
+  );
+
+  // VLibras renders Portuguese; always hand it the most recent PT caption
+  // (which may be a translation of a non-PT utterance produced by ingestCaption).
+  const latestCaptionText = (() => {
+    for (let i = captions.length - 1; i >= 0; i--) {
+      if (captions[i].lang === "PT") return captions[i].text;
+    }
+    return null;
+  })();
 
   // Acquire camera/mic on mount so the lobby can show the preview.
   useEffect(() => {
@@ -147,26 +349,45 @@ const MeetingRoom = () => {
     screenStreamRef.current = screenStream;
   }, [screenStream]);
 
-  const doLeave = useCallback(() => {
+  const doLeave = useCallback(async (): Promise<void> => {
+    try {
+      // Make sure the recording is finalized (download triggered) before the
+      // page / component tears down.
+      if (recorder.isRecording) {
+        await recorder.stop();
+      }
+    } catch {
+      /* ignore */
+    }
     try {
       rawLocalStreamRef.current?.getTracks().forEach((t) => t.stop());
       screenStreamRef.current?.getTracks().forEach((t) => t.stop());
-      if (recorder.isRecording) recorder.stop();
     } catch {
       /* ignore */
     }
   }, [recorder]);
 
-  // Auto-leave when the user closes the tab / navigates away.
+  // Auto-leave when the user closes the tab / navigates away. We do a best
+  // effort to flush the recording; browsers don't guarantee we'll have time
+  // to finish the blob on unload, but the recorder also fires onstop from a
+  // normal Leave click (which is the reliable path).
   useEffect(() => {
-    const handler = () => doLeave();
+    const handler = () => {
+      try {
+        if (recorder.isRecording) recorder.stop();
+        rawLocalStreamRef.current?.getTracks().forEach((t) => t.stop());
+        screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+      } catch {
+        /* ignore */
+      }
+    };
     window.addEventListener("pagehide", handler);
     window.addEventListener("beforeunload", handler);
     return () => {
       window.removeEventListener("pagehide", handler);
       window.removeEventListener("beforeunload", handler);
     };
-  }, [doLeave]);
+  }, [recorder]);
 
   const meetingLink = `${window.location.origin}/meeting/${id}`;
 
@@ -180,18 +401,32 @@ const MeetingRoom = () => {
     toast.success("Código copiado!");
   };
 
-  const handleLeave = () => {
-    doLeave();
+  const handleLeave = async () => {
+    const wasRecording = recorder.isRecording;
+    const recordingEmail = recorder.email;
+    if (wasRecording) {
+      toast(`Finalizando gravação e enviando para ${recordingEmail}…`, {
+        icon: "📨",
+      });
+    }
+    await doLeave();
+    if (wasRecording) {
+      toast.success(
+        `Gravação enviada para ${recordingEmail} e baixada no seu computador.`
+      );
+    }
     navigate("/");
   };
 
   /* ---------- Recording ---------- */
 
-  const onRecordingButtonClick = () => {
+  const onRecordingButtonClick = async () => {
     if (recorder.isRecording) {
-      recorder.stop();
+      const to = recorder.email;
+      toast(`Finalizando gravação e enviando para ${to}…`, { icon: "📨" });
+      await recorder.stop();
       toast.success(
-        `Gravação encerrada. Uma cópia será enviada para ${recorder.email}.`
+        `Gravação enviada para ${to} e baixada no seu computador.`
       );
     } else {
       setRecordDialogOpen(true);
@@ -208,7 +443,10 @@ const MeetingRoom = () => {
       localName: displayName || "Você",
       meetingId: id ?? "reuniao",
     });
-    toast(`Gravando reunião. Cópia será enviada para ${email}.`, { icon: "🔴" });
+    toast(
+      `Gravando reunião (você + participantes). Cópia será enviada para ${email}.`,
+      { icon: "🔴" }
+    );
   };
 
   /* ---------- Screen share / captions / pin ---------- */
@@ -336,6 +574,26 @@ const MeetingRoom = () => {
               <span className="text-xs font-medium">REC</span>
             </div>
           )}
+          {isCaptionsOn && srStatus.kind === "listening" && (
+            <div
+              className="flex items-center gap-1.5 text-primary flex-shrink-0"
+              title={`Microfone transcrito em ${myLang} → legenda traduzida para os idiomas selecionados`}
+            >
+              <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+              <span className="text-xs font-medium">
+                Ouvindo {myLang}
+              </span>
+            </div>
+          )}
+          {isCaptionsOn && srStatus.kind === "error" && (
+            <div
+              className="flex items-center gap-1.5 text-destructive flex-shrink-0"
+              title={`Erro nas legendas: ${srStatus.error}`}
+            >
+              <div className="w-2 h-2 rounded-full bg-destructive" />
+              <span className="text-xs font-medium">Legenda com erro</span>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="sm"
@@ -417,7 +675,13 @@ const MeetingRoom = () => {
         )}
       </div>
 
-      <CaptionsBar captions={filteredCaptions} isVisible={isCaptionsOn} />
+      <CaptionsBar
+        captions={filteredCaptions}
+        isVisible={isCaptionsOn}
+        librasEnabled={librasEnabled}
+        librasSourceText={librasEnabled ? latestCaptionText : null}
+        librasSignAvailable={librasReady}
+      />
 
       <div className="flex justify-center pb-4 pt-1 flex-shrink-0">
         <MeetingControls
@@ -427,6 +691,7 @@ const MeetingRoom = () => {
           isScreenSharing={isScreenSharing}
           isCaptionsOn={isCaptionsOn}
           activeCaptionLangs={activeCaptionLangs}
+          myLang={myLang}
           background={background}
           filter={filter}
           onToggleMic={() => setIsMicOn(!isMicOn)}
@@ -434,6 +699,7 @@ const MeetingRoom = () => {
           onToggleRecording={onRecordingButtonClick}
           onToggleScreenShare={toggleScreenShare}
           onToggleCaptionLang={toggleCaptionLang}
+          onChangeMyLang={setMyLang}
           onChangeBackground={setBackground}
           onChangeFilter={setFilter}
           onLeave={handleLeave}

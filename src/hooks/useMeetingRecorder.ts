@@ -23,6 +23,7 @@ export const useMeetingRecorder = () => {
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const stopResolverRef = useRef<(() => void) | null>(null);
   const rafIdRef = useRef<number | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -256,10 +257,12 @@ export const useMeetingRecorder = () => {
     ({ email: emailArg, localStream, remotes, screenStream, localName, meetingId }: StartOptions) => {
       if (isRecording) return;
 
-      // Canvas output (1280x720)
+      // Canvas output — 960x540 is plenty for meeting recordings and keeps
+      // the per-frame compositing cost low enough that we can coexist with
+      // the blur pipeline on the local stream without dropping frames.
       const canvas = document.createElement("canvas");
-      canvas.width = 1280;
-      canvas.height = 720;
+      canvas.width = 960;
+      canvas.height = 540;
       canvasRef.current = canvas;
 
       currentStateRef.current = { localStream, remotes, screenStream, localName };
@@ -309,8 +312,10 @@ export const useMeetingRecorder = () => {
         }
       }
 
-      // Recording stream = canvas video + mixed audio
-      const canvasStream = canvas.captureStream(24);
+      // Recording stream = canvas video + mixed audio. 15fps is smooth
+      // enough for talking-head meeting footage and nearly halves encoder
+      // work compared to 24fps.
+      const canvasStream = canvas.captureStream(15);
       const recordingStream = new MediaStream([
         ...canvasStream.getVideoTracks(),
         ...dest.stream.getAudioTracks(),
@@ -356,17 +361,25 @@ export const useMeetingRecorder = () => {
           el.srcObject = null;
         });
         videoElsRef.current.clear();
-        if (rafIdRef.current != null) cancelAnimationFrame(rafIdRef.current);
+        if (rafIdRef.current != null) {
+          clearInterval(rafIdRef.current as unknown as number);
+        }
         rafIdRef.current = null;
         canvasRef.current = null;
+
+        // Resolve the pending stop() promise so callers can await the
+        // download + cleanup (e.g. before navigating away on leave).
+        const resolver = stopResolverRef.current;
+        stopResolverRef.current = null;
+        if (resolver) resolver();
       };
 
-      // Drawing loop
-      const loop = () => {
-        drawFrame();
-        rafIdRef.current = requestAnimationFrame(loop);
-      };
-      loop();
+      // Drawing loop — throttled to ~15fps so the compositing overhead is
+      // bounded even when the local stream has blur enabled. We keep the
+      // ref under the same `rafIdRef` name for simple cleanup.
+      const intervalId = window.setInterval(drawFrame, 66);
+      rafIdRef.current = intervalId as unknown as number;
+      drawFrame();
 
       recorder.start(1000);
       setEmail(emailArg);
@@ -375,10 +388,25 @@ export const useMeetingRecorder = () => {
     [isRecording]
   );
 
-  const stop = useCallback(() => {
+  const stop = useCallback((): Promise<void> => {
     const rec = recorderRef.current;
-    if (rec && rec.state !== "inactive") rec.stop();
+    if (!rec || rec.state === "inactive") {
+      setIsRecording(false);
+      return Promise.resolve();
+    }
+    const promise = new Promise<void>((resolve) => {
+      stopResolverRef.current = resolve;
+    });
+    try {
+      rec.stop();
+    } catch {
+      // If stop throws, ensure we don't hang.
+      const resolver = stopResolverRef.current;
+      stopResolverRef.current = null;
+      if (resolver) resolver();
+    }
     setIsRecording(false);
+    return promise;
   }, []);
 
   return { isRecording, email, start, stop, syncStreams };

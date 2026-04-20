@@ -7,6 +7,7 @@ import { useState, useRef, useEffect } from "react";
 import type { BackgroundMode, FilterMode } from "@/hooks/useProcessedStream";
 
 type CaptionLang = "PT" | "EN" | "ES" | "Libras";
+type SpokenLang = "PT" | "EN" | "ES";
 
 interface MeetingControlsProps {
   isMicOn: boolean;
@@ -15,6 +16,7 @@ interface MeetingControlsProps {
   isScreenSharing: boolean;
   isCaptionsOn: boolean;
   activeCaptionLangs: CaptionLang[];
+  myLang: SpokenLang;
   background: BackgroundMode;
   filter: FilterMode;
   onToggleMic: () => void;
@@ -22,6 +24,7 @@ interface MeetingControlsProps {
   onToggleRecording: () => void;
   onToggleScreenShare: () => void;
   onToggleCaptionLang: (lang: CaptionLang) => void;
+  onChangeMyLang: (lang: SpokenLang) => void;
   onChangeBackground: (b: BackgroundMode) => void;
   onChangeFilter: (f: FilterMode) => void;
   onLeave: () => void;
@@ -32,6 +35,12 @@ const CAPTION_OPTIONS: { value: CaptionLang; label: string }[] = [
   { value: "EN", label: "English" },
   { value: "ES", label: "Español" },
   { value: "Libras", label: "Libras" },
+];
+
+const SPOKEN_OPTIONS: { value: SpokenLang; label: string }[] = [
+  { value: "PT", label: "Português" },
+  { value: "EN", label: "English" },
+  { value: "ES", label: "Español" },
 ];
 
 const BACKGROUND_OPTIONS: { value: BackgroundMode; label: string }[] = [
@@ -51,9 +60,10 @@ const FILTER_OPTIONS: { value: FilterMode; label: string }[] = [
 
 const MeetingControls = ({
   isMicOn, isCameraOn, isRecording, isScreenSharing, isCaptionsOn, activeCaptionLangs,
+  myLang,
   background, filter,
   onToggleMic, onToggleCamera, onToggleRecording, onToggleScreenShare,
-  onToggleCaptionLang, onChangeBackground, onChangeFilter, onLeave,
+  onToggleCaptionLang, onChangeMyLang, onChangeBackground, onChangeFilter, onLeave,
 }: MeetingControlsProps) => {
   const [showCaptionMenu, setShowCaptionMenu] = useState(false);
   const [showEffectsMenu, setShowEffectsMenu] = useState(false);
@@ -192,8 +202,22 @@ const MeetingControls = ({
           </Tooltip>
 
           {showCaptionMenu && (
-            <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 glass rounded-xl p-2 min-w-[160px] shadow-lg z-20">
-              <p className="text-xs text-muted-foreground px-2 py-1 font-medium">Idiomas das legendas</p>
+            <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 glass rounded-xl p-2 min-w-[220px] shadow-lg z-20">
+              <p className="text-xs text-muted-foreground px-2 py-1 font-medium">
+                Idioma que eu falo
+              </p>
+              {SPOKEN_OPTIONS.map((opt) => (
+                <SelectItem
+                  key={opt.value}
+                  label={opt.label}
+                  active={myLang === opt.value}
+                  onClick={() => onChangeMyLang(opt.value)}
+                />
+              ))}
+              <div className="h-px bg-border my-1.5" />
+              <p className="text-xs text-muted-foreground px-2 py-1 font-medium">
+                Legendas que eu quero ver
+              </p>
               {CAPTION_OPTIONS.map((opt) => {
                 const isActive = activeCaptionLangs.includes(opt.value);
                 return (
@@ -209,6 +233,9 @@ const MeetingControls = ({
                   </button>
                 );
               })}
+              <p className="text-[11px] text-muted-foreground px-2 pt-2 pb-1 leading-snug">
+                Se você fala um idioma e seleciona outro, a legenda é traduzida automaticamente.
+              </p>
             </div>
           )}
         </div>

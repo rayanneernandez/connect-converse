@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Peer, { MediaConnection, DataConnection } from "peerjs";
 
 export interface RemoteParticipant {
@@ -9,10 +9,27 @@ export interface RemoteParticipant {
   isCameraOn: boolean;
 }
 
+export interface RemoteCaption {
+  peerId: string;
+  speaker: string;
+  lang: string; // "PT" | "EN" | "ES" | "Libras"
+  text: string;
+  id: string;
+  final: boolean;
+}
+
 type PeerMessage =
   | { type: "hello"; name: string; isMuted: boolean; isCameraOn: boolean }
   | { type: "state"; name: string; isMuted: boolean; isCameraOn: boolean }
-  | { type: "peer-list"; peers: string[] };
+  | { type: "peer-list"; peers: string[] }
+  | {
+      type: "caption";
+      id: string;
+      lang: string;
+      text: string;
+      final: boolean;
+      speaker: string;
+    };
 
 interface Options {
   meetingId: string;
@@ -21,6 +38,7 @@ interface Options {
   isMicOn: boolean;
   isCameraOn: boolean;
   enabled?: boolean;
+  onRemoteCaption?: (c: RemoteCaption) => void;
 }
 
 /**
@@ -40,6 +58,7 @@ export const useMeetingPeers = ({
   isMicOn,
   isCameraOn,
   enabled = true,
+  onRemoteCaption,
 }: Options) => {
   const [remotes, setRemotes] = useState<Record<string, RemoteParticipant>>({});
   const [myPeerId, setMyPeerId] = useState<string>("");
@@ -47,12 +66,16 @@ export const useMeetingPeers = ({
   // Keep latest values accessible inside async callbacks without stale closures
   const localStreamRef = useRef<MediaStream | null>(null);
   const stateRef = useRef({ isMicOn, isCameraOn, localName });
+  const onRemoteCaptionRef = useRef(onRemoteCaption);
   useEffect(() => {
     localStreamRef.current = localStream;
   }, [localStream]);
   useEffect(() => {
     stateRef.current = { isMicOn, isCameraOn, localName };
   }, [isMicOn, isCameraOn, localName]);
+  useEffect(() => {
+    onRemoteCaptionRef.current = onRemoteCaption;
+  }, [onRemoteCaption]);
 
   const peerRef = useRef<Peer | null>(null);
   const mediaConnsRef = useRef<Map<string, MediaConnection>>(new Map());
@@ -159,6 +182,15 @@ export const useMeetingPeers = ({
           });
         } else if (msg.type === "peer-list") {
           handlePeerList(msg.peers);
+        } else if (msg.type === "caption") {
+          onRemoteCaptionRef.current?.({
+            peerId: conn.peer,
+            speaker: msg.speaker,
+            lang: msg.lang,
+            text: msg.text,
+            id: msg.id,
+            final: msg.final,
+          });
         }
       });
 
@@ -413,6 +445,29 @@ export const useMeetingPeers = ({
     });
   }, [localStream]);
 
+  // Broadcast caption updates to all peers. Safe to call from anywhere; drops
+  // silently if no peers are connected yet.
+  const sendCaption = useCallback(
+    (c: { id: string; lang: string; text: string; final: boolean }) => {
+      const payload: PeerMessage = {
+        type: "caption",
+        id: c.id,
+        lang: c.lang,
+        text: c.text,
+        final: c.final,
+        speaker: stateRef.current.localName,
+      };
+      dataConnsRef.current.forEach((conn) => {
+        try {
+          conn.send(payload);
+        } catch {
+          /* ignore */
+        }
+      });
+    },
+    []
+  );
+
   // Broadcast state changes (mute/camera/name) to all connected peers.
   useEffect(() => {
     const payload: PeerMessage = {
@@ -433,5 +488,6 @@ export const useMeetingPeers = ({
   return {
     remotes: Object.values(remotes),
     myPeerId,
+    sendCaption,
   };
 };

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Results, SelfieSegmentation } from "@mediapipe/selfie_segmentation";
 
 export type BackgroundMode = "none" | "blur" | "heavy-blur";
@@ -36,6 +36,12 @@ export const backgroundLabel: Record<BackgroundMode, string> = {
 const MP_CDN =
   "https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747";
 
+// Segmentation runs at most this many times per second — the visible canvas
+// still refreshes at full video framerate so the image never freezes. 15 fps
+// is imperceptible for head movement and significantly reduces CPU pressure
+// (the bottleneck when the user is also recording the meeting).
+const SEG_FPS = 15;
+
 /**
  * Produces a processed MediaStream with (optional) person-aware background
  * blur and/or color filter. When both effects are "none", the original stream
@@ -43,6 +49,17 @@ const MP_CDN =
  *
  * Audio tracks from the source stream are preserved on the output so the
  * caller can use the result directly in WebRTC / MediaRecorder.
+ *
+ * Performance notes:
+ *  - The canvas and the output MediaStream are created synchronously, so the
+ *    output is never "black" while waiting for MediaPipe to load.
+ *  - While MediaPipe is still downloading we draw filter-only frames so the
+ *    preview is smooth from the first tick.
+ *  - Segmentation uses the lite model (selection 0) and is capped at SEG_FPS,
+ *    which dramatically reduces jank vs. running it at every animation frame.
+ *  - The pipeline is only torn down when the source stream changes or when the
+ *    user switches between "any effect on" and "no effects at all". Switching
+ *    between different backgrounds / filters reuses the pipeline (via refs).
  */
 export const useProcessedStream = (
   source: MediaStream | null,
@@ -51,8 +68,8 @@ export const useProcessedStream = (
 ): MediaStream | null => {
   const [output, setOutput] = useState<MediaStream | null>(null);
 
-  // Stash the current effect values so the render loop can pick them up
-  // without having to re-create MediaPipe every time the user toggles something.
+  // Refs let the render loop pick up the latest settings without recreating
+  // MediaPipe / the canvas every time the user toggles.
   const backgroundRef = useRef(background);
   const filterRef = useRef(filter);
   useEffect(() => {
@@ -61,6 +78,12 @@ export const useProcessedStream = (
   useEffect(() => {
     filterRef.current = filter;
   }, [filter]);
+
+  // Pipeline only needs to exist when at least one effect is selected.
+  const needsPipeline = useMemo(
+    () => background !== "none" || filter !== "none",
+    [background, filter]
+  );
 
   useEffect(() => {
     if (!source) {
@@ -73,8 +96,8 @@ export const useProcessedStream = (
       return;
     }
 
-    // Fast path: no effects at all.
-    if (background === "none" && filter === "none") {
+    // Fast path: no effects at all — just forward the original stream.
+    if (!needsPipeline) {
       setOutput(source);
       return;
     }
@@ -108,112 +131,164 @@ export const useProcessedStream = (
     let disposed = false;
     let rafId: number | null = null;
     let segmentation: SelfieSegmentation | null = null;
+    let segmentationReady = false;
+    let segmentationLoading = false;
+    let lastResults: Results | null = null;
+
+    // Prime the canvas with a solid frame right away so the MediaStream never
+    // produces a "black" first video frame while the video element is still
+    // warming up.
+    outCtx.fillStyle = "#0b0b10";
+    outCtx.fillRect(0, 0, width, height);
 
     const canvasStream = outCanvas.captureStream(30);
     source.getAudioTracks().forEach((t) => canvasStream.addTrack(t));
     setOutput(canvasStream);
 
-    const draw = (image: CanvasImageSource, mask?: CanvasImageSource) => {
+    const drawFilterOnly = () => {
+      const fxCss = filterCss(filterRef.current);
+      outCtx.save();
+      outCtx.clearRect(0, 0, width, height);
+      outCtx.filter = fxCss;
+      outCtx.drawImage(video, 0, 0, width, height);
+      outCtx.restore();
+    };
+
+    const drawSegmented = (results: Results) => {
       const bg = backgroundRef.current;
-      const fx = filterRef.current;
+      const fxCss = filterCss(filterRef.current);
       const blurAmount = BACKGROUND_BLUR_PX[bg];
-      const fxCss = filterCss(fx);
 
       outCtx.save();
       outCtx.clearRect(0, 0, width, height);
 
-      if (bg !== "none" && mask) {
-        // 1) Blurred background covering the full frame (plus color filter).
+      if (bg !== "none") {
+        // 1) Blurred background covering the full frame (+ color filter).
         outCtx.filter =
           fxCss === "none"
             ? `blur(${blurAmount}px)`
             : `blur(${blurAmount}px) ${fxCss}`;
-        outCtx.drawImage(image, 0, 0, width, height);
+        outCtx.drawImage(results.image, 0, 0, width, height);
 
-        // 2) Prepare sharp person layer using the mask on an offscreen canvas.
+        // 2) Sharp person layer isolated with the mask.
         personCtx.save();
         personCtx.clearRect(0, 0, width, height);
-        personCtx.drawImage(mask, 0, 0, width, height);
+        personCtx.drawImage(results.segmentationMask, 0, 0, width, height);
         personCtx.globalCompositeOperation = "source-in";
-        personCtx.drawImage(image, 0, 0, width, height);
+        personCtx.drawImage(results.image, 0, 0, width, height);
         personCtx.restore();
 
-        // 3) Overlay the person on top of the blurred background.
+        // 3) Overlay the sharp person on top of the blurred background.
         outCtx.filter = fxCss;
         outCtx.drawImage(personCanvas, 0, 0, width, height);
       } else {
-        // No background effect — just apply color filter (if any) to the frame.
+        // Background disabled but filter still on — just draw the frame.
         outCtx.filter = fxCss;
-        outCtx.drawImage(image, 0, 0, width, height);
+        outCtx.drawImage(results.image, 0, 0, width, height);
       }
 
       outCtx.restore();
     };
 
-    const startWithoutSegmentation = () => {
-      const loop = () => {
-        if (disposed) return;
-        if (video.readyState >= 2) {
-          draw(video);
+    const loadSegmentation = () => {
+      if (segmentation || segmentationLoading) return;
+      segmentationLoading = true;
+      (async () => {
+        try {
+          const mod = await import("@mediapipe/selfie_segmentation");
+          if (disposed) return;
+          const instance = new mod.SelfieSegmentation({
+            locateFile: (file: string) => `${MP_CDN}/${file}`,
+          });
+          // modelSelection 0 is the lite model — much faster with barely any
+          // visual cost for webcam-distance framing.
+          instance.setOptions({ modelSelection: 0 });
+          instance.onResults((results: Results) => {
+            if (disposed) return;
+            lastResults = results;
+            segmentationReady = true;
+          });
+          segmentation = instance;
+        } catch (err) {
+          console.warn(
+            "[useProcessedStream] failed to load MediaPipe — continuing with filter-only",
+            err
+          );
+        } finally {
+          segmentationLoading = false;
         }
-        rafId = requestAnimationFrame(loop);
-      };
-      loop();
+      })();
     };
 
-    const startWithSegmentation = async () => {
-      try {
-        const mod = await import("@mediapipe/selfie_segmentation");
+    // Kick the segmentation inference at a capped frame rate. This runs on a
+    // timer (not rAF) so the visible redraw loop can still run at full speed.
+    let segInFlight = false;
+    let segTimerId: ReturnType<typeof setInterval> | null = null;
+    const startSegTimer = () => {
+      if (segTimerId != null) return;
+      segTimerId = setInterval(async () => {
         if (disposed) return;
-        const SelfieSegmentation = mod.SelfieSegmentation;
-        segmentation = new SelfieSegmentation({
-          locateFile: (file: string) => `${MP_CDN}/${file}`,
-        });
-        segmentation.setOptions({ modelSelection: 1 });
-        segmentation.onResults((results: Results) => {
-          if (disposed) return;
-          draw(results.image, results.segmentationMask);
-        });
-
-        // Feed frames to MediaPipe at ~24fps. `send` is async; if it takes
-        // longer than one frame the next tick just skips.
-        let sending = false;
-        const tick = async () => {
-          if (disposed) return;
-          if (!sending && video.readyState >= 2 && segmentation) {
-            sending = true;
-            try {
-              await segmentation.send({ image: video });
-            } catch {
-              /* ignore */
-            }
-            sending = false;
-          }
-          rafId = requestAnimationFrame(tick);
-        };
-        tick();
-      } catch (err) {
-        console.warn("[useProcessedStream] segmentation failed, falling back to filter-only", err);
-        startWithoutSegmentation();
+        if (!segmentation || segInFlight || video.readyState < 2) return;
+        if (backgroundRef.current === "none") return;
+        segInFlight = true;
+        try {
+          await segmentation.send({ image: video });
+        } catch {
+          /* ignore */
+        } finally {
+          segInFlight = false;
+        }
+      }, Math.round(1000 / SEG_FPS));
+    };
+    const stopSegTimer = () => {
+      if (segTimerId != null) {
+        clearInterval(segTimerId);
+        segTimerId = null;
       }
     };
 
-    const play = () =>
-      video.play().catch(() => {
-        /* ignore autoplay errors */
-      });
-    play();
+    // Main render loop. Always runs at rAF cadence; composites using the most
+    // recent segmentation mask when a background effect is selected, or draws
+    // filter-only otherwise.
+    const loop = () => {
+      if (disposed) return;
+      if (video.readyState >= 2) {
+        const bg = backgroundRef.current;
 
-    if (background !== "none") {
-      startWithSegmentation();
-    } else {
-      startWithoutSegmentation();
-    }
+        if (bg !== "none") {
+          // Need segmentation — load it on first need.
+          if (!segmentation && !segmentationLoading) {
+            loadSegmentation();
+          }
+          // Until the first result arrives, keep the preview smooth by
+          // drawing a filter-only frame instead of a black canvas.
+          if (segmentationReady && lastResults) {
+            drawSegmented(lastResults);
+          } else {
+            drawFilterOnly();
+          }
+          startSegTimer();
+        } else {
+          // No background effect — color filter only. Don't waste CPU on
+          // segmentation but keep the instance loaded in case the user turns
+          // background back on.
+          stopSegTimer();
+          drawFilterOnly();
+        }
+      }
+      rafId = requestAnimationFrame(loop);
+    };
+
+    video.play().catch(() => {
+      /* ignore autoplay errors */
+    });
+    loop();
 
     return () => {
       disposed = true;
       if (rafId != null) cancelAnimationFrame(rafId);
       rafId = null;
+      stopSegTimer();
       try {
         segmentation?.close();
       } catch {
@@ -223,7 +298,7 @@ export const useProcessedStream = (
       canvasStream.getVideoTracks().forEach((t) => t.stop());
       video.srcObject = null;
     };
-  }, [source, background, filter]);
+  }, [source, needsPipeline]);
 
   return output;
 };
