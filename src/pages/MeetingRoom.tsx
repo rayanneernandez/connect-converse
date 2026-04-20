@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Copy, MessageSquare, Users } from "lucide-react";
 import { toast } from "sonner";
@@ -78,6 +78,27 @@ const MeetingRoom = () => {
   // Apply effects to the outgoing stream so everyone sees the same processed
   // video (and the local user sees their own effects in the preview too).
   const localStream = useProcessedStream(rawLocalStream, background, filter);
+
+  // What actually gets sent to remote peers. While screen-sharing, we swap
+  // the video track for the screen-share one so other participants see the
+  // shared screen (standard Google Meet behavior). Audio stays the mic.
+  const outgoingPeerStream = useMemo<MediaStream | null>(() => {
+    if (!screenStream) return localStream;
+    const combined = new MediaStream();
+    // Screen video replaces camera video.
+    screenStream.getVideoTracks().forEach((t) => combined.addTrack(t));
+    // Prefer mic audio (so peers still hear the speaker) but mix in screen
+    // audio too if the user chose "share system audio" in the picker.
+    const micAudio = localStream?.getAudioTracks() ?? [];
+    micAudio.forEach((t) => combined.addTrack(t));
+    screenStream.getAudioTracks().forEach((t) => {
+      // Avoid adding the same track twice (shouldn't happen, but safe).
+      if (!combined.getAudioTracks().some((a) => a.id === t.id)) {
+        combined.addTrack(t);
+      }
+    });
+    return combined;
+  }, [localStream, screenStream]);
 
   /* ---------- Captions / Libras ---------- */
   const [captions, setCaptions] = useState<CaptionEntry[]>([]);
@@ -174,9 +195,11 @@ const MeetingRoom = () => {
   );
 
   // WebRTC mesh — only connects after the user clicks "Join" in the lobby.
+  // We hand it `outgoingPeerStream` (camera + mic OR screen + mic) so remote
+  // participants see whatever the user is currently sharing.
   const { remotes, sendCaption } = useMeetingPeers({
     meetingId: id ?? "",
-    localStream,
+    localStream: outgoingPeerStream,
     localName: displayName || "Convidado",
     isMicOn,
     isCameraOn,
